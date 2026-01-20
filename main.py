@@ -269,12 +269,12 @@ if app_mode == "🎨 專家修復端":
                     with st.spinner("AI 正在分析..."):
                         if not st.session_state.mask_img:
                             st.warning("請先在左側標記修復區域！")
-                            continue
-                        
-                        res_bytes = stable_artifact_repair(raw_img, st.session_state.mask_img)
-                        if res_bytes:
-                            st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
-                            st.success("✅ 修復完成！")
+                        else:
+                            # 只有當有遮罩時才執行修復
+                            res_bytes = stable_artifact_repair(raw_img, st.session_state.mask_img)
+                            if res_bytes:
+                                st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
+                                st.success("✅ 修復完成！")
 
                 if st.session_state.result_img:
                     st.image(st.session_state.result_img, caption="AI 修復結果", width=400)
