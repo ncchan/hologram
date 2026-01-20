@@ -3,272 +3,244 @@ import base64
 import io
 import os
 import numpy as np
-import cv2
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 from streamlit_drawable_canvas import st_canvas
 from tencentcloud.common import credential
-from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
-from tencentcloud.aiart.v20221229 import aiart_client
-from tencentcloud.common.profile.client_profile import ClientProfile
-from tencentcloud.common.profile.http_profile import HttpProfile
-from rembg import remove, new_session
-
-# 全域配置
-CACHE_FILE = "hologram_cache.png"
+from tencentcloud.aiart.v20221229 import aiart_client, models
+from rembg import remove
 
 # ==========================================
-# 🔴 第一步：強制讀取 URL 參數（優先於一切）
+# 适配云端的配置
 # ==========================================
-query_params = st.query_params
-current_view = query_params.get("view", ["repair"])[0]
+CACHE_FILE = os.path.join(st.runtime.get_instance().temp_dir, "hologram_cache.png")
+st.set_option('server.headless', True)
 
-# 這是最關鍵的修復：如果是投影端，直接跳過所有修復端的程式碼
-if current_view == "holo":
-    # 🌌 全息投影端（獨立執行，不受任何干擾）
-    st.set_page_config(page_title="全息投影端", layout="wide", initial_sidebar_state="collapsed")
+# ==========================================
+# 1. 密钥读取 + 核心 AI 逻辑（关键修改：使用 st.secrets）
+# ==========================================
+def get_tencent_credentials():
+    """安全读取腾讯云密钥（本地/云端通用）"""
+    try:
+        # 从 Streamlit Secrets 读取密钥（支持嵌套结构）
+        SECRET_ID = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_ID", "")
+        SECRET_KEY = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_KEY", "")
+        
+        # 校验密钥是否有效
+        if not SECRET_ID or not SECRET_KEY:
+            st.warning("⚠️ 未检测到腾讯云密钥，将使用本地模拟修复模式")
+            return None, None
+        return SECRET_ID, SECRET_KEY
+    except Exception as e:
+        st.warning(f"⚠️ 读取密钥失败: {str(e)}，使用本地模拟修复模式")
+        return None, None
+
+def stable_artifact_repair(img_pil, mask_pil):
+    # 先读取密钥
+    SECRET_ID, SECRET_KEY = get_tencent_credentials()
     
-    # 強制隱藏所有不需要的元素
-    st.markdown("""
-        <style>
-            /* 隱藏所有側邊欄相關元素 */
-            [data-testid="stSidebar"], 
-            [data-testid="collapsedControl"], 
-            footer,
-            header { 
-                display: none !important; 
-            }
-            /* 強制設置黑色背景 */
-            body { 
-                background-color: black !important; 
-                margin: 0; 
-                padding: 0; 
-                overflow: hidden;
-            }
-            /* 全屏容器 */
-            .fullscreen {
-                display: flex;
-                justify-content: center;
-                align-items: center;
-                height: 100vh;
-                width: 100vw;
-                background: black;
-            }
-        </style>
-    """, unsafe_allow_html=True)
+    # 无密钥时使用本地模拟修复（兜底）
+    if not SECRET_ID or not SECRET_KEY:
+        st.info("ℹ️ 本地模拟模式：生成智能模糊修复效果")
+        img_array = np.array(img_pil)
+        mask_array = np.array(mask_pil) / 255.0
+        blurred = cv2.GaussianBlur(img_array, (15,15), 0) if 'cv2' in locals() else img_pil.filter(ImageFilter.GaussianBlur(5))
+        result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred * mask_array[:, :, np.newaxis]
+        result_img = Image.fromarray(result_array.astype(np.uint8))
+        buf = io.BytesIO()
+        result_img.save(buf, format="PNG")
+        return buf.getvalue()
+    
+    # 有密钥时调用腾讯云接口
+    try:
+        cred = credential.Credential(SECRET_ID, SECRET_KEY)
+        client = aiart_client.AiartClient(cred, "ap-guangzhou")
+        
+        def to_b64(image):
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode("utf-8")
+        
+        mask_blur = mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
+        req = models.ImageInpaintingRemovalRequest()
+        req.InputImage = to_b64(img_pil)
+        req.Mask = to_b64(mask_blur)
+        resp = client.ImageInpaintingRemoval(req)
+        return base64.b64decode(resp.ResultImage)
+    except Exception as e:
+        st.error(f"❌ AI 修復失敗: {str(e)}")
+        # 接口调用失败时兜底
+        img_blur = img_pil.filter(ImageFilter.GaussianBlur(5))
+        buf = io.BytesIO()
+        img_blur.save(buf, format="PNG")
+        return buf.getvalue()
 
-    # 自動刷新
+def local_remove_bg(img_pil):
+    try:
+        return remove(img_pil)
+    except Exception as e:
+        st.warning(f"⚠️ 去背失敗，使用備用方案: {str(e)}")
+        return img_pil.convert("RGBA")
+
+# ==========================================
+# 2. 全息投影演算法（无修改）
+# ==========================================
+def create_pseudo_3d_hologram(img_pil, is_transparent=True):
+    bg_size = 1024
+    hologram_bg = Image.new("RGBA", (bg_size, bg_size), (0, 0, 0, 255))
+    img_ready = ImageEnhance.Contrast(img_pil).enhance(1.4)
+    img_ready.thumbnail((380, 380))
+    
+    front = img_ready
+    back = ImageOps.mirror(img_ready).rotate(180)
+    side_w = int(img_ready.width * 0.8)
+    left = img_ready.resize((side_w, img_ready.height)).rotate(270, expand=True)
+    right = ImageOps.mirror(img_ready).resize((side_w, img_ready.height)).rotate(90, expand=True)
+    
+    cx, sy = (bg_size - img_ready.width) // 2, (bg_size - left.height) // 2
+    
+    m_f = front if is_transparent else None
+    m_b = back if is_transparent else None
+    m_l = left if is_transparent else None
+    m_r = right if is_transparent else None
+
+    hologram_bg.paste(front, (cx, 70), m_f)
+    hologram_bg.paste(back, (cx, bg_size - img_ready.height - 70), m_b)
+    hologram_bg.paste(left, (70, sy), m_l)
+    hologram_bg.paste(right, (bg_size - right.width - 70, sy), m_r)
+    return hologram_bg.convert("RGB")
+
+# ==========================================
+# 3. Streamlit 使用者介面（无核心修改）
+# ==========================================
+st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
+
+# 初始化 Session State
+if 'result_img' not in st.session_state:
+    st.session_state.result_img = None
+if 'last_mtime' not in st.session_state:
+    st.session_state.last_mtime = 0
+
+st.sidebar.header("⚙️ 模式切換")
+app_mode = st.sidebar.selectbox("視窗模式", ["🎨 專家修復端", "🌌 全息投影端"])
+
+if app_mode == "🎨 專家修復端":
+    st.title("🏛️ 文物修復主控台")
+    
+    st.sidebar.divider()
+    stroke_w = st.sidebar.slider("筆觸大小", 5, 100, 25)
+    tool_mode = st.sidebar.radio("工具", ("畫筆模式", "編輯/刪除模式"))
+    drawing_mode = "freedraw" if tool_mode == "畫筆模式" else "transform"
+    
+    h_type = st.sidebar.radio("全息類型", ("立體文物 (自動去背)", "畫作 (保留背景)"))
+    file = st.sidebar.file_uploader("上傳文物圖片", type=["jpg", "png", "jpeg"])
+
+    if file:
+        raw_img = Image.open(file).convert("RGB")
+        display_w = 600
+        display_h = int(raw_img.height * (display_w / raw_img.width))
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("🖍️ 標記殘缺區域")
+            canvas_result = st_canvas(
+                fill_color="rgba(255, 255, 255, 0.4)",
+                stroke_width=stroke_w,
+                stroke_color="rgba(255, 255, 255, 0.4)",
+                background_image=raw_img.resize((display_w, display_h)),
+                update_streamlit=True,
+                height=display_h,
+                width=display_w,
+                drawing_mode=drawing_mode,
+                key="main_editor_canvas"
+            )
+
+        with col2:
+            st.subheader("✨ 修復與同步")
+            if st.button("🚀 開始 AI 修復"):
+                if canvas_result.image_data is not None:
+                    with st.spinner("AI 正在分析並補全..."):
+                        # 生成遮罩
+                        mask_raw = Image.fromarray((canvas_result.image_data[:, :, 3] > 0).astype(np.uint8) * 255)
+                        mask_full = mask_raw.resize(raw_img.size, Image.NEAREST).convert("L")
+                        # 呼叫 AI 修復
+                        res_bytes = stable_artifact_repair(raw_img, mask_full)
+                        if res_bytes:
+                            st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
+                            st.success("修復完成！")
+
+            # 只要有修復後的圖，就顯示並提供同步按鈕
+            if st.session_state.result_img:
+                st.image(st.session_state.result_img, caption="AI 修復結果", width=400)
+                
+                if st.button("🔮 同步修復圖到全息螢幕"):
+                    with st.spinner("同步中..."):
+                        img_to_sync = st.session_state.result_img
+                        is_transparent = "去背" in h_type
+                        if is_transparent:
+                            processed_img = local_remove_bg(img_to_sync)
+                        else:
+                            processed_img = img_to_sync.convert("RGBA")
+                        
+                        holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
+                        # 云端安全写入：增加异常捕获
+                        try:
+                            holo_final.save(CACHE_FILE)
+                            st.toast("✅ 修復圖已推送到全息螢幕！", icon="🔮")
+                        except Exception as e:
+                            st.error(f"❌ 同步失敗: {str(e)}")
+
+else:
+    # ==========================================
+    # 🌌 全息投影端
+    # ==========================================
+    st.markdown("""<style>
+        [data-testid="stSidebar"],
+        [data-testid="collapsedControl"],
+        footer,
+        header { display: none !important; }
+        body { background-color: black !important; }
+        #hologram-display { 
+            background-color: black; 
+            height: 100vh; 
+            width: 100vw; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+        }
+    </style>""", unsafe_allow_html=True)
+    
     st.markdown('<meta http-equiv="refresh" content="2">', unsafe_allow_html=True)
-
-    # 顯示圖片或等待訊息
+    
     placeholder = st.empty()
+    
+    # 检查缓存文件并显示
     try:
         if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
+            # 读取并显示图片
             img = Image.open(CACHE_FILE)
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             img_b64 = base64.b64encode(buf.getvalue()).decode()
             with placeholder.container():
                 st.markdown(f"""
-                    <div class="fullscreen">
-                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00;">
+                    <div id="hologram-display">
+                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain;">
                     </div>
                 """, unsafe_allow_html=True)
         else:
             with placeholder.container():
                 st.markdown(f"""
-                    <div class="fullscreen">
-                        <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
-                            📡 等待修復端同步圖像...
-                        </div>
+                    <div id="hologram-display">
+                        <div style="color: white; font-size: 20px;">等待修復端同步圖像...</div>
                     </div>
                 """, unsafe_allow_html=True)
     except Exception as e:
         with placeholder.container():
             st.markdown(f"""
-                <div class="fullscreen">
+                <div id="hologram-display">
                     <div style="color: red; font-size: 20px;">載入錯誤: {str(e)}</div>
                 </div>
             """, unsafe_allow_html=True)
-
-    # 強制結束程式，確保不會執行後面的修復端程式碼
-    st.stop()
-
-# ==========================================
-# 🎨 專家修復端（只有當不是投影端時才會執行）
-# ==========================================
-st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
-
-def get_credentials():
-    try:
-        SECRET_ID = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_ID", "")
-        SECRET_KEY = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_KEY", "")
-        if not SECRET_ID or not SECRET_KEY:
-            st.warning("⚠️ 未檢測到金鑰，將使用本地模擬修復。")
-            return None, None
-        return SECRET_ID, SECRET_KEY
-    except:
-        return None, None
-
-def stable_artifact_repair(img_pil, mask_pil):
-    try:
-        SECRET_ID, SECRET_KEY = get_credentials()
-        if not SECRET_ID or not SECRET_KEY:
-            st.info("ℹ️ 演示模式：生成智能模糊修復效果")
-            img_array = np.array(img_pil)
-            mask_array = np.array(mask_pil) / 255.0
-            blurred = cv2.GaussianBlur(img_array, (15,15), 0)
-            result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred * mask_array[:, :, np.newaxis]
-            result_img = Image.fromarray(result_array.astype(np.uint8))
-            buf = io.BytesIO()
-            result_img.save(buf, format="PNG")
-            return buf.getvalue()
-        cred = credential.Credential(SECRET_ID, SECRET_KEY)
-        httpProfile = HttpProfile()
-        httpProfile.endpoint = "aiart.tencentcloudapi.com"
-        clientProfile = ClientProfile()
-        clientProfile.httpProfile = httpProfile
-        client = aiart_client.AiartClient(cred, "ap-guangzhou", clientProfile)
-        def to_b64(image):
-            buf = io.BytesIO()
-            image.save(buf, format="PNG")
-            return base64.b64encode(buf.getvalue()).decode("utf-8")
-        mask_blur = mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
-        params = {"Image": to_b64(img_pil), "Mask": to_b64(mask_blur), "Action": "ImageInpainting"}
-        resp = client.call("ImageInpainting", params)
-        if resp and "ResultImage" in resp:
-            return base64.b64decode(resp["ResultImage"])
-        else:
-            st.warning("⚠️ 接口返回無結果，使用本地模拟")
-            img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
-            buf = io.BytesIO()
-            img_blur.save(buf, format="PNG")
-            return buf.getvalue()
-    except TencentCloudSDKException as e:
-        st.error(f"❌ 腾讯云API錯誤: {str(e)}")
-        img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
-        buf = io.BytesIO()
-        img_blur.save(buf, format="PNG")
-        return buf.getvalue()
-    except Exception as e:
-        st.error(f"❌ AI 修復失敗: {str(e)}")
-        buf = io.BytesIO()
-        img_pil.save(buf, format="PNG")
-        return buf.getvalue()
-
-def local_remove_bg(img_pil):
-    try:
-        session = new_session("isnet-general-use")
-        return remove(img_pil, session=session)
-    except Exception as e:
-        st.warning(f"⚠️ AI去背失敗，使用顏色去背: {str(e)}")
-        img_rgba = img_pil.convert("RGBA")
-        datas = img_rgba.getdata()
-        new_data = []
-        for item in datas:
-            if item[0] > 240 and item[1] > 240 and item[2] > 240:
-                new_data.append((255, 255, 255, 0))
-            else:
-                new_data.append(item)
-        img_rgba.putdata(new_data)
-        return img_rgba
-
-def create_pseudo_3d_hologram(img_pil, is_transparent=True):
-    try:
-        bg_size = 1024
-        hologram_bg = Image.new("RGBA", (bg_size, bg_size), (0, 0, 0, 255))
-        img_ready = ImageEnhance.Contrast(img_pil).enhance(1.4)
-        img_ready.thumbnail((380, 380))
-        front = img_ready
-        back = ImageOps.mirror(img_ready).rotate(180)
-        side_w = int(img_ready.width * 0.8)
-        left = img_ready.resize((side_w, img_ready.height)).rotate(270, expand=True)
-        right = ImageOps.mirror(img_ready).resize((side_w, img_ready.height)).rotate(90, expand=True)
-        cx, sy = (bg_size - img_ready.width) // 2, (bg_size - left.height) // 2
-        m_f = front if is_transparent else None
-        m_b = back if is_transparent else None
-        m_l = left if is_transparent else None
-        m_r = right if is_transparent else None
-        hologram_bg.paste(front, (cx, 70), m_f)
-        hologram_bg.paste(back, (cx, bg_size - img_ready.height - 70), m_b)
-        hologram_bg.paste(left, (70, sy), m_l)
-        hologram_bg.paste(right, (bg_size - right.width - 70, sy), m_r)
-        return hologram_bg.convert("RGB")
-    except Exception as e:
-        st.error(f"❌ 生成全息圖失敗: {str(e)}")
-        return Image.new("RGB", (1024, 1024), (0, 0, 0))
-
-# 初始化 Session State
-if 'result_img' not in st.session_state:
-    st.session_state.result_img = None
-if 'mask_img' not in st.session_state:
-    st.session_state.mask_img = None
-
-# 側邊欄導航
-with st.sidebar:
-    st.header("⚙️ 系統選單")
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button("🎨 專家修復端", use_container_width=True):
-            st.query_params.clear()
-            st.query_params["view"] = "repair"
-    with col2:
-        if st.button("🌌 全息投影端", use_container_width=True):
-            st.query_params.clear()
-            st.query_params["view"] = "holo"
-
-# 修復端主程式
-st.title("🏛️ 文物修復主控台")
-st.sidebar.divider()
-stroke_w = st.sidebar.slider("筆觸大小", 5, 100, 25)
-tool_mode = st.sidebar.radio("工具", ("✏️ 畫筆模式", "🧽 橡皮擦模式"))
-stroke_color = "#FF0000" if tool_mode == "✏️ 畫筆模式" else "#00000000"
-drawing_mode = "freedraw"
-h_type = st.sidebar.radio("全息類型", ("立體文物 (自動去背)", "畫作 (保留背景)"))
-file = st.sidebar.file_uploader("上傳文物圖片", type=["jpg", "png", "jpeg"])
-
-if file:
-    raw_img = Image.open(file).convert("RGB")
-    display_w = 600
-    display_h = int(raw_img.height * (display_w / raw_img.width))
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("🖍️ 標記殘缺區域")
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 255, 255, 0.0)",
-            stroke_width=stroke_w,
-            stroke_color=stroke_color,
-            background_image=raw_img.resize((display_w, display_h)),
-            update_streamlit=True,
-            height=display_h,
-            width=display_w,
-            drawing_mode=drawing_mode,
-            key="main_editor_canvas"
-        )
-        if canvas_result.image_data is not None:
-            mask_raw = Image.fromarray((canvas_result.image_data[:, :, 0] > 0).astype(np.uint8) * 255)
-            mask_full = mask_raw.resize(raw_img.size, Image.NEAREST).convert("L")
-            st.session_state.mask_img = mask_full
-    with col2:
-        st.subheader("✨ 修復與同步")
-        if st.button("🚀 開始 AI 修復"):
-            if st.session_state.mask_img is not None:
-                with st.spinner("AI 正在分析並補全..."):
-                    res_bytes = stable_artifact_repair(raw_img, st.session_state.mask_img)
-                    if res_bytes:
-                        st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
-                        st.success("✅ 修復完成！")
-            else:
-                st.warning("⚠️ 請先標記殘缺區域！")
-        if st.session_state.result_img:
-            st.image(st.session_state.result_img, caption="AI 修復結果", width=400)
-            if st.button("🔮 同步修復圖到全息螢幕", type="primary"):
-                with st.spinner("同步中..."):
-                    img_to_sync = st.session_state.result_img
-                    is_transparent = "去背" in h_type
-                    if is_transparent:
-                        processed_img = local_remove_bg(img_to_sync)
-                    else:
-                        processed_img = img_to_sync.convert("RGBA")
-                    holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
-                    holo_final.save(CACHE_FILE)
-                    st.toast("✅ 修復圖已推送到全息螢幕！", icon="🔮")
