@@ -1,15 +1,15 @@
 # 核心框架（锁定兼容版本）
-streamlit==1.28.2
-streamlit-drawable-canvas==0.9.2
+streamlit==1.28.2          # 最后一个保留image_to_url的稳定版，适配canvas组件
+streamlit-drawable-canvas==0.9.2  # 与Streamlit 1.28.2完美兼容
 
 # 图像处理库（适配Python 3.10.19）
-matplotlib==3.7.5
-numpy==1.24.4
-Pillow==9.5.0
-rembg==2.0.47  # 降级rembg到更稳定版本
-opencv-python==4.5.5.62  # 降级OpenCV，避免导入错误
-onnxruntime==1.15.1
-onnx==1.14.1
+matplotlib==3.7.5          # 避开新版matplotlib的后端问题
+numpy==1.24.4              # 适配Python 3.10的稳定版，无API变更
+Pillow==9.5.0              # 兼容图片处理的核心函数
+rembg==2.0.47              # 降级后解决与OpenCV的导入冲突
+opencv-python==4.5.5.62    # 与rembg 2.0.47匹配的稳定版
+onnxruntime==1.15.1        # rembg的核心依赖，适配Python 3.10
+onnx==1.14.1               # 与onnxruntime 1.15.1配套
 
 # 腾讯云SDK
-tencentcloud-sdk-python==3.0.1000
+tencentcloud-sdk-python==3.0.1000  # 兼容Python 3.10的AI接口版本
