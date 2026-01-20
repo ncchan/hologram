@@ -1,4 +1,4 @@
-# 核心框架（兼容 Python 3.11）
+# 核心框架
 streamlit==1.32.2
 streamlit-drawable-canvas==0.9.2
 
@@ -11,5 +11,5 @@ opencv-python==4.9.0.80
 onnxruntime==1.17.3
 onnx==1.15.0
 
-# 腾讯云SDK（降级到更稳定的版本，避免模块缺失）
-tencentcloud-sdk-python==3.0.800
+# 强制安装完整的腾讯云SDK（包含所有子模块）
+tencentcloud-sdk-python[all]==3.0.800
