@@ -139,6 +139,7 @@ def init_session_state():
             st.session_state[key] = value
 
 # 創建可交互繪圖的介面（基於streamlit-drawable-canvas）
+# 創建可交互繪圖的介面（基於streamlit-drawable-canvas 0.9.2 兼容版）
 def draw_on_image(img_pil, stroke_w):
     st.subheader("🖍️ 標記殘缺區域（滑鼠拖動畫筆）")
     
@@ -150,19 +151,12 @@ def draw_on_image(img_pil, stroke_w):
         new_size = (int(width*ratio), int(height*ratio))
         img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
     
-    # 將圖片轉為Base64，避免image_to_url兼容問題
-    buf = io.BytesIO()
-    img_pil.save(buf, format="PNG")
-    img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    img_url = f"data:image/png;base64,{img_base64}"
-    
-    # 創建可繪製的交互畫布
+    # 創建可繪製的交互畫布（使用舊版本兼容的 background_image 參數）
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 0.0)",  # 填充透明
         stroke_width=stroke_w,
         stroke_color="#FF0000",  # 紅色筆刷（醒目易見）
-        background_image=None,
-        background_image_url=img_url,  # 使用Base64 URL傳入背景圖
+        background_image=img_pil,  # 舊版本僅支援PIL圖像，刪除 background_image_url
         update_streamlit=True,
         height=img_pil.height,
         width=img_pil.width,
@@ -187,7 +181,6 @@ def draw_on_image(img_pil, stroke_w):
             st.image(mask_img, caption="標記的修復區域（遮罩）", use_column_width=True)
     
     return mask_img
-
 # ==========================================
 # 5. 使用者介面（繁體中文 + 可交互繪圖）
 # ==========================================
@@ -327,3 +320,4 @@ else:
         """,
         unsafe_allow_html=True
     )
+
