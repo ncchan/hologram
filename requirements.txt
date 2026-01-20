@@ -1,15 +1,15 @@
 # 核心框架（兼容 Python 3.11）
-streamlit==1.32.2          # 3.11 兼容的稳定版
+streamlit==1.32.2
 streamlit-drawable-canvas==0.9.2
 
-# 图像处理库（无导入冲突）
+# 图像处理库
 matplotlib==3.8.4
 numpy==1.26.4
 Pillow==10.2.0
-rembg==2.0.50              # 恢复最新版rembg
-opencv-python==4.9.0.80    # 恢复最新版OpenCV
+rembg==2.0.50
+opencv-python==4.9.0.80
 onnxruntime==1.17.3
 onnx==1.15.0
 
-# 腾讯云SDK
-tencentcloud-sdk-python==3.0.1100
+# 腾讯云SDK（降级到更稳定的版本，避免模块缺失）
+tencentcloud-sdk-python==3.0.800
