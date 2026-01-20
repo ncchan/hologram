@@ -138,14 +138,19 @@ def draw_on_image(img_pil, stroke_w):
         new_size = (int(width*ratio), int(height*ratio))
         img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
     
-    img_np = np.array(img_pil)
+    # 將圖片轉為Base64，直接傳入canvas（避開image_to_url）
+    buf = io.BytesIO()
+    img_pil.save(buf, format="PNG")
+    img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    img_url = f"data:image/png;base64,{img_base64}"
     
-    # 創建可繪製的交互畫布
+    # 創建可繪製的交互畫布（直接使用Base64 URL）
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 0.0)",  # 填充透明
         stroke_width=stroke_w,
         stroke_color="#FF0000",  # 紅色筆刷（醒目易見）
-        background_image=img_pil,
+        background_image=None,  # 不再傳入PIL對象
+        background_image_url=img_url,  # 改用Base64 URL
         update_streamlit=True,
         height=img_pil.height,
         width=img_pil.width,
@@ -310,3 +315,4 @@ else:
         """,
         unsafe_allow_html=True
     )
+
