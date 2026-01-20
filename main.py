@@ -2,6 +2,7 @@ import streamlit as st
 import base64
 import io
 import time
+import os
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageDraw
 from tencentcloud.common import credential
@@ -12,40 +13,54 @@ import cv2
 from streamlit_drawable_canvas import st_canvas
 
 # ==========================================
-# 1. 基礎配置（適配 Python 3.11 + Streamlit 1.32.2）
+# 1. 全域配置與快取檔案路徑
 # ==========================================
+TEMP_FILE_PATH = "_temp_holo.png"  # 用於跨分頁同步的臨時檔案
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
-plt.switch_backend('Agg')  # 避免matplotlib後端衝突
+plt.switch_backend('Agg')
 
 # ==========================================
-# 2. 核心 AI 邏輯（金鑰配置提示優化）
+# 2. 跨分頁同步工具 (核心修復)
+# ==========================================
+def save_to_hologram(img_pil):
+    """將圖片保存到臨時檔案，供投影端讀取"""
+    try:
+        img_pil.save(TEMP_FILE_PATH)
+        return True
+    except Exception as e:
+        st.error(f"❌ 同步失敗: {str(e)}")
+        return False
+
+def load_hologram():
+    """從臨時檔案讀取最新的全息圖"""
+    if os.path.exists(TEMP_FILE_PATH):
+        try:
+            return Image.open(TEMP_FILE_PATH)
+        except:
+            return None
+    return None
+
+# ==========================================
+# 3. 核心 AI 與圖像處理
 # ==========================================
 def get_credentials():
-    """安全取得騰訊雲金鑰"""
     try:
-        # 優先讀取Secrets，本地測試時可臨時替換為你的金鑰（演示後註釋）
         SECRET_ID = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_ID", "")
         SECRET_KEY = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_KEY", "")
-        
         if not SECRET_ID or not SECRET_KEY:
-            st.warning("⚠️ 未檢測到騰訊雲金鑰！本地測試可臨時填入金鑰，部署時請在Streamlit Secrets配置。")
-            # 【本地測試用】取消下面兩行註釋，填入你的金鑰（演示後務必註釋）
-            # SECRET_ID = "你的測試ID"
-            # SECRET_KEY = "你的測試KEY"
+            st.warning("⚠️ 未檢測到金鑰，將使用本地模擬修復。")
             return None, None
         return SECRET_ID, SECRET_KEY
-    except Exception as e:
-        st.error(f"❌ 讀取金鑰失敗: {str(e)}")
+    except:
         return None, None
 
 def stable_artifact_repair(img_pil, mask_pil):
     try:
         SECRET_ID, SECRET_KEY = get_credentials()
-        if not SECRET_ID or not SECRET_KEY:
-            st.info("ℹ️ 使用本地模擬修復效果（無金鑰時的備用方案）")
-            # 無金鑰時的備用方案：返回模糊後的原圖（演示時不影響展示流程）
-            return img_pil.filter(ImageFilter.GaussianBlur(2)).tobytes()
-        
+        if not SECRET_ID:
+            st.info("ℹ️ 演示模式：生成模糊修復效果")
+            return img_pil.filter(ImageFilter.GaussianBlur(3)).tobytes()
+
         cred = credential.Credential(SECRET_ID, SECRET_KEY)
         client = aiart_client.AiartClient(cred, "ap-guangzhou")
         
@@ -61,20 +76,18 @@ def stable_artifact_repair(img_pil, mask_pil):
         resp = client.ImageInpaintingRemoval(req)
         return base64.b64decode(resp.ResultImage)
     except Exception as e:
-        st.error(f"❌ AI 修復失敗: {str(e)}")
-        # 備用方案：返回原圖，避免演示中斷
+        st.error(f"❌ AI 錯誤: {str(e)}")
         buf = io.BytesIO()
         img_pil.save(buf, format="PNG")
         return buf.getvalue()
 
 def local_remove_bg(img_pil):
-    """恢復完整AI去背功能（基於rembg，Python 3.11兼容）"""
     try:
-        session = new_session("isnet-general-use")  # 使用輕量模型，提升速度
+        session = new_session("isnet-general-use")
         return remove(img_pil, session=session)
     except Exception as e:
-        st.warning(f"⚠️ 去背失敗，使用原始圖像: {str(e)}")
-        # 備用方案：原生簡易去背
+        st.warning(f"⚠️ AI去背失敗，使用顏色去背: {str(e)}")
+        # 備用方案：白色變透明
         img_rgba = img_pil.convert("RGBA")
         datas = img_rgba.getdata()
         new_data = []
@@ -86,9 +99,6 @@ def local_remove_bg(img_pil):
         img_rgba.putdata(new_data)
         return img_rgba
 
-# ==========================================
-# 3. 全像投影演算法
-# ==========================================
 def create_pseudo_3d_hologram(img_pil, is_transparent=True):
     try:
         bg_size = 1024
@@ -122,80 +132,74 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
         return Image.new("RGB", (1024, 1024), (0, 0, 0))
 
 # ==========================================
-# 4. 筆刷標記工具（可交互繪圖版本）
+# 4. 進階畫布工具 (支援橡皮擦)
 # ==========================================
-def init_session_state():
-    default_states = {
-        'result_img': None,
-        'holo_img': None,
-        'last_update': 0,
-        'uploaded_img': None,
-        'mask_img': None,
-        'draw_image': None,
-        'stroke_width': 25
-    }
-    for key, value in default_states.items():
-        if key not in st.session_state:
-            st.session_state[key] = value
-
-# 創建可交互繪圖的介面（基於streamlit-drawable-canvas）
-# 創建可交互繪圖的介面（基於streamlit-drawable-canvas 0.9.2 兼容版）
-def draw_on_image(img_pil, stroke_w):
-    st.subheader("🖍️ 標記殘缺區域（滑鼠拖動畫筆）")
+def draw_on_image_advanced(img_pil, stroke_w):
+    st.subheader("🖍️ 標記殘缺區域")
     
-    # 調整圖片尺寸，避免畫布過大影響效能
+    # 模式切換
+    col1, col2 = st.columns(2)
+    with col1:
+        mode = st.radio("工具模式", ["✏️ 繪製 (標記)", "🧽 橡皮擦 (修正)"], key="tool_mode")
+    
+    # 設置顏色：繪製為紅色，橡皮擦為透明
+    stroke_color = "#FF0000" if mode == "✏️ 繪製 (標記)" else "#00000000"
+    
     max_size = 800
     width, height = img_pil.size
     if width > max_size or height > max_size:
         ratio = min(max_size/width, max_size/height)
         new_size = (int(width*ratio), int(height*ratio))
         img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
-    
-    # 創建可繪製的交互畫布（使用舊版本兼容的 background_image 參數）
+
+    # 繪製畫布
     canvas_result = st_canvas(
-        fill_color="rgba(255, 255, 255, 0.0)",  # 填充透明
+        fill_color="rgba(255, 255, 255, 0.0)",
         stroke_width=stroke_w,
-        stroke_color="#FF0000",  # 紅色筆刷（醒目易見）
-        background_image=img_pil,  # 舊版本僅支援PIL圖像，刪除 background_image_url
+        stroke_color=stroke_color,
+        background_image=img_pil,
         update_streamlit=True,
         height=img_pil.height,
         width=img_pil.width,
-        drawing_mode="freedraw",  # 自由繪製模式
-        key="repair_canvas",
+        drawing_mode="freedraw",
+        key="advanced_canvas",
     )
 
-    # 處理繪製結果，生成修復用遮罩
     mask_img = None
     if canvas_result.image_data is not None:
-        # 提取使用者繪製的區域（紅色通道）
-        mask_np = canvas_result.image_data[:, :, 0]  # 取紅色通道
-        mask_np = (mask_np > 0).astype(np.uint8) * 255  # 轉換為黑白遮罩
+        mask_np = canvas_result.image_data[:, :, 0]
+        mask_np = (mask_np > 0).astype(np.uint8) * 255
         mask_img = Image.fromarray(mask_np)
         st.session_state.mask_img = mask_img
         
-        # 預覽遮罩效果
+        # 預覽
         col1, col2 = st.columns(2)
-        with col1:
-            st.image(img_pil, caption="原始圖片", use_column_width=True)
-        with col2:
-            st.image(mask_img, caption="標記的修復區域（遮罩）", use_column_width=True)
+        with col1: st.image(img_pil, caption="原始圖片", use_column_width=True)
+        with col2: st.image(mask_img, caption="修復遮罩 (白色區域)", use_column_width=True)
     
     return mask_img
+
 # ==========================================
-# 5. 使用者介面（繁體中文 + 可交互繪圖）
+# 5. 主程式流程
 # ==========================================
+def init_session_state():
+    default_states = {
+        'result_img': None, 'holo_img': None, 'uploaded_img': None, 
+        'mask_img': None, 'stroke_width': 25
+    }
+    for k, v in default_states.items():
+        if k not in st.session_state: st.session_state[k] = v
+
 init_session_state()
 
-# 側邊欄
-st.sidebar.header("⚙️ 模式切換")
+st.sidebar.header("⚙️ 系統選單")
 app_mode = st.sidebar.selectbox("視窗模式", ["🎨 專家修復端", "🌌 全像投影端"])
 
 if app_mode == "🎨 專家修復端":
     st.title("🏛️ 文物修復主控台")
     
     st.sidebar.divider()
-    # 調整筆觸大小
-    st.session_state.stroke_width = st.sidebar.slider("筆觸大小", 5, 100, st.session_state.stroke_width)
+    st.session_state.stroke_width = st.sidebar.slider("筆刷粗細", 5, 100, 25)
     h_type = st.sidebar.radio("全像類型", ("立體文物 (自動去背)", "畫作 (保留背景)"))
     file = st.sidebar.file_uploader("上傳文物圖片", type=["jpg", "png", "jpeg"])
 
@@ -207,34 +211,28 @@ if app_mode == "🎨 專家修復端":
             
             col1, col2 = st.columns(2)
             with col1:
-                # 使用新的可交互繪圖函數
-                mask_img = draw_on_image(display_img, st.session_state.stroke_width)
+                mask_img = draw_on_image_advanced(display_img, st.session_state.stroke_width)
 
             with col2:
                 st.subheader("✨ 修復與同步")
+                
                 if st.button("🚀 開始 AI 修復"):
-                    with st.spinner("AI 正在分析並補全..."):
-                        # 獲取遮罩（無標記時用默認遮罩）
-                        if st.session_state.mask_img is None:
-                            mask = Image.new("L", raw_img.size, 0)
-                            # 默認標記中心區域（演示用）
-                            draw = ImageDraw.Draw(mask)
-                            draw.ellipse([raw_img.width//2-50, raw_img.height//2-50, 
-                                          raw_img.width//2+50, raw_img.height//2+50], fill=255)
-                            st.session_state.mask_img = mask
+                    with st.spinner("AI 正在分析..."):
+                        if not st.session_state.mask_img:
+                            st.warning("請先在左側標記修復區域！")
+                            continue
                         
-                        # AI修復
                         res_bytes = stable_artifact_repair(raw_img, st.session_state.mask_img)
                         if res_bytes:
                             st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
                             st.success("✅ 修復完成！")
 
-                # 顯示修復結果
                 if st.session_state.result_img:
                     st.image(st.session_state.result_img, caption="AI 修復結果", width=400)
                     
-                    if st.button("🔮 同步修復圖到全像螢幕"):
-                        with st.spinner("同步中..."):
+                    # 同步按鈕：保存到檔案
+                    if st.button("🔮 同步修復圖到全像螢幕", type="primary"):
+                        with st.spinner("正在廣播圖像..."):
                             img_to_sync = st.session_state.result_img
                             is_transparent = "去背" in h_type
                             
@@ -244,80 +242,69 @@ if app_mode == "🎨 專家修復端":
                                 processed_img = img_to_sync.convert("RGBA")
                             
                             holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
-                            st.session_state.holo_img = holo_final
-                            st.session_state.last_update = time.time()
                             
-                            st.toast("✅ 修復圖已推送到全像螢幕！", icon="🔮")
+                            # 核心修改：保存到檔案
+                            if save_to_hologram(holo_final):
+                                st.session_state.holo_img = holo_final
+                                st.toast("📡 圖像已同步至投影端！", icon="✅")
+                                # 自動刷新頁面以確保狀態一致 (選用)
+                                # st.experimental_rerun() 
+
         except Exception as e:
-            st.error(f"❌ 處理圖片失敗: {str(e)}")
+            st.error(f"❌ 處理失敗: {str(e)}")
 
 else:
-    # 🌌 全像投影端
+    # 🌌 全像投影端 (自動刷新)
     st.markdown("""<style>
         [data-testid="stSidebar"] {display: none;}
         footer {visibility: hidden;}
+        body { background-color: black; }
         #hologram-display { 
-            background-color: black; 
-            height: 100vh; 
-            width: 100vw; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            position: fixed; 
-            top: 0; 
-            left: 0; 
-        }
-        .refresh-btn {
-            position: fixed; 
-            bottom: 20px; 
-            right: 20px; 
-            z-index: 999;
+            height: 100vh; width: 100vw; 
+            display: flex; align-items: center; justify-content: center; 
+            position: fixed; top: 0; left: 0; background: black;
         }
     </style>""", unsafe_allow_html=True)
     
     placeholder = st.empty()
+    status_placeholder = st.empty()
     
-    # 圖像轉base64
-    def pil_to_base64(img):
-        buf = io.BytesIO()
-        img.save(buf, format="PNG", quality=95)
-        return base64.b64encode(buf.getvalue()).decode("utf-8")
+    # 自動偵測檔案更新
+    current_time = time.time()
+    last_modified = os.path.getmtime(TEMP_FILE_PATH) if os.path.exists(TEMP_FILE_PATH) else 0
     
-    if st.session_state.holo_img:
-        img_b64 = pil_to_base64(st.session_state.holo_img)
-        with placeholder.container():
-            st.markdown(f"""
-                <div id="hologram-display">
-                    <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain;">
-                </div>
-            """, unsafe_allow_html=True)
-    else:
-        with placeholder.container():
-            st.markdown(f"""
-                <div id="hologram-display">
-                    <div style="color: white; font-size: 24px; text-align: center;">
-                        🎯 等待修復端同步圖像...
+    # 每 0.5 秒檢查一次
+    while True:
+        img = load_hologram()
+        if img:
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+            
+            with placeholder.container():
+                st.markdown(f"""
+                    <div id="hologram-display">
+                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00;">
                     </div>
-                </div>
-            """, unsafe_allow_html=True)
-    
-    # 重新整理按鈕
-    st.markdown(
-        """
-        <div class="refresh-btn">
-            <button onclick="window.location.reload()" style="
-                padding: 10px 20px;
-                background-color: #4CAF50;
-                color: white;
-                border: none;
-                border-radius: 5px;
-                font-size: 16px;
-                cursor: pointer;
-            ">
-                🔄 重新整理全像圖
-            </button>
-        </div>
-        """,
-        unsafe_allow_html=True
-    )
-
+                """, unsafe_allow_html=True)
+            status_placeholder.empty() # 隱藏等待訊息
+        else:
+            with placeholder.container():
+                st.markdown(f"""
+                    <div id="hologram-display">
+                        <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
+                            📡 等待修復端同步...
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+        
+        # 檢查檔案是否變更，或等待 0.5 秒
+        time.sleep(0.5)
+        # Streamlit 無法在迴圈中無限運行，我們需要利用按鈕或查詢參數觸發重載
+        # 為了簡化演示，這裡使用一個隱藏的按鈕或自動刷新機制
+        # 實務上，建議投影端打開後，每幾秒手動刷新一次，或使用下方的自動刷新程式碼
+        
+    # 下方是一個更簡單的自動刷新實現 (使用 meta tag)
+    st.markdown("""
+        <meta http-equiv="refresh" content="2">
+    """, unsafe_allow_html=True)
