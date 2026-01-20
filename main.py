@@ -2,7 +2,6 @@ import streamlit as st
 import base64
 import io
 import os
-import time
 import numpy as np
 import cv2
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
@@ -15,13 +14,13 @@ from tencentcloud.common.profile.http_profile import HttpProfile
 from rembg import remove, new_session
 
 # ==========================================
-# 🔴 全域配置與 URL 狀態鎖定 (核心修復)
+# 🔴 全域配置
 # ==========================================
 CACHE_FILE = "hologram_cache.png"
 
-# 獲取當前 URL 參數
+# 獲取當前 URL 參數 (兼容舊版本寫法)
 query_params = st.query_params
-current_page = query_params.get("view", ["repair"])[0] # 預設為修復端
+current_view = query_params.get("view", ["repair"])[0]
 
 # 設定頁面配置
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
@@ -151,61 +150,55 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
         return Image.new("RGB", (1024, 1024), (0, 0, 0))
 
 # ==========================================
-# 4. 頁面渲染邏輯
+# 4. 頁面渲染與導航
 # ==========================================
 
-# 初始化 Session State
-if 'result_img' not in st.session_state:
-    st.session_state.result_img = None
-if 'mask_img' not in st.session_state:
-    st.session_state.mask_img = None
-
-# --- 側邊欄導航 ---
+# --- 側邊欄導航 (修復版：兼容所有 Streamlit 版本) ---
 with st.sidebar:
     st.header("⚙️ 系統選單")
     
-    # 使用按鈕進行導航，點擊後改變 URL
     col1, col2 = st.columns(2)
+    
     with col1:
+        # 按鈕邏輯：直接修改 query_params，這會自動觸發頁面刷新
         if st.button("🎨 專家修復端", use_container_width=True):
             st.query_params.clear()
             st.query_params["view"] = "repair"
-            st.rerun() # 強制重新運行
-    
+
     with col2:
         if st.button("🌌 全息投影端", use_container_width=True):
             st.query_params.clear()
             st.query_params["view"] = "holo"
-            st.rerun() # 強制重新運行
 
 # --- 邏輯分流 ---
 
-if current_page == "holo":
+if current_view == "holo":
     # ==========================================
-    # 🌌 全息投影端 (使用 Meta Refresh 穩定刷新)
+    # 🌌 全息投影端
     # ==========================================
-    
-    # 隱藏側邊欄
-    st.markdown("""<style>
-        [data-testid="stSidebar"] {display: none;}
-        footer {visibility: hidden;}
-        body {background-color: black !important; overflow: hidden;}
-    </style>""", unsafe_allow_html=True)
-    
-    # 🔴 核心修復：使用標準的 HTML Meta 標籤進行自動刷新
-    # 這是最穩定的方法，每隔 2 秒刷新一次頁面
+    # 隱藏側邊欄 (使用 CSS 強制隱藏，避免干擾觀看)
+    st.markdown("""
+        <style>
+            [data-testid="stSidebar"] { display: none !important; }
+            [data-testid="collapsedControl"] { display: none !important; }
+            footer { visibility: hidden; }
+            body { background-color: black !important; }
+        </style>
+    """, unsafe_allow_html=True)
+
+    # 🔴 核心：Meta Refresh 自動刷新 (每 2 秒)
+    # 這是最穩定的自動刷新方式，且 URL 帶有 view=holo，所以不會跳回
     st.markdown('<meta http-equiv="refresh" content="2">', unsafe_allow_html=True)
 
-    # 創建全屏黑色容器
+    # 創建顯示區域
     placeholder = st.empty()
-    
+
     try:
-        # 檢查圖片是否存在且不是空檔
+        # 檢查圖片是否存在且有效
         if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
-            # 讀取圖片
             img = Image.open(CACHE_FILE)
             
-            # 轉換為 Base64 以在 HTML 中顯示
+            # 轉換為 Base64
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             img_b64 = base64.b64encode(buf.getvalue()).decode()
@@ -219,11 +212,11 @@ if current_page == "holo":
                         height: 100vh; 
                         background: black;
                     ">
-                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00; border-radius: 10px;">
+                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00;">
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            # 沒有圖片時顯示等待訊息
+            # 顯示等待畫面
             with placeholder.container():
                 st.markdown(f"""
                     <div style="
@@ -233,16 +226,13 @@ if current_page == "holo":
                         height: 100vh; 
                         background: black; 
                         color: #00ff00; 
-                        font-family: sans-serif;
+                        font-size: 24px;
                     ">
-                        <div style="text-align: center;">
-                            <div style="font-size: 3rem; margin-bottom: 20px;">📡</div>
-                            <div style="font-size: 1.5rem; text-shadow: 0 0 10px #00ff00;">等待修復端同步圖像...</div>
-                        </div>
+                        📡 等待修復端同步圖像...
                     </div>
                 """, unsafe_allow_html=True)
+                
     except Exception as e:
-        # 捕捉任何讀取錯誤（如圖片正在被寫入）
         with placeholder.container():
             st.markdown(f"""
                 <div style="
@@ -253,7 +243,7 @@ if current_page == "holo":
                     background: black; 
                     color: red;
                 ">
-                    <div>圖片加載中或出錯: {str(e)}</div>
+                    載入錯誤: {str(e)}
                 </div>
             """, unsafe_allow_html=True)
 
@@ -273,6 +263,12 @@ else:
     
     h_type = st.sidebar.radio("全息類型", ("立體文物 (自動去背)", "畫作 (保留背景)"))
     file = st.sidebar.file_uploader("上傳文物圖片", type=["jpg", "png", "jpeg"])
+
+    # 初始化 Session State
+    if 'result_img' not in st.session_state:
+        st.session_state.result_img = None
+    if 'mask_img' not in st.session_state:
+        st.session_state.mask_img = None
 
     if file:
         raw_img = Image.open(file).convert("RGB")
