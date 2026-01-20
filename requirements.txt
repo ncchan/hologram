@@ -1,11 +1,21 @@
-streamlit==1.32.2
-tencentcloud-sdk-python>=3.0.1100
-Pillow>=10.3.0
-numpy==1.26.4
-rembg==2.0.57
-streamlit-drawable-canvas==0.9.2
-onnxruntime==1.17.3
-opencv-python-headless==4.9.0.80
-python-multipart==0.0.9
-typing-extensions==4.9.0
+# 核心框架（适配最新版Streamlit）
+streamlit>=1.50.0,<2.0.0
 
+# 腾讯云SDK
+tencentcloud-sdk-python>=3.0.1100
+
+# 图像处理（兼容Python 3.13）
+Pillow>=10.3.0,<11.0.0
+numpy>=1.26.4,<2.0.0
+rembg>=2.0.57,<3.0.0
+
+# 绘图画布组件
+streamlit-drawable-canvas>=0.9.2,<0.10.0
+
+# rembg依赖（关键修复：升级到兼容Python 3.13的版本）
+onnxruntime>=1.18.0,<2.0.0
+opencv-python-headless>=4.9.0.80,<5.0.0
+
+# 其他依赖
+python-multipart>=0.0.9
+typing-extensions>=4.9.0
