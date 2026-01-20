@@ -7,8 +7,9 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 from streamlit_drawable_canvas import st_canvas
 from tencentcloud.common import credential
-# 重点：修正导入方式，确保 models 能正确引用
-from tencentcloud.aiart.v20221229 import aiart_client, models
+from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
+# 修正：导入万象优图（iimage）的客户端和模型，而非aiart
+from tencentcloud.iimage.v20201230 import iimage_client, models
 from rembg import remove
 
 # ==========================================
@@ -35,7 +36,7 @@ def get_tencent_credentials():
         return None, None
 
 # ==========================================
-# 2. 核心 AI 修复逻辑（完全保留你的本地调用结构）
+# 2. 核心 AI 修复逻辑（修正为万象优图iimage接口）
 # ==========================================
 def stable_artifact_repair(img_pil, mask_pil):
     # 读取密钥
@@ -47,10 +48,11 @@ def stable_artifact_repair(img_pil, mask_pil):
         img_blur.save(buf, format="PNG")
         return buf.getvalue()
     
-    # 完全保留你本地调用的逻辑，仅修复类名问题
+    # 修正：使用腾讯云万象优图（iimage）的图像修复接口
     try:
         cred = credential.Credential(SECRET_ID, SECRET_KEY)
-        client = aiart_client.AiartClient(cred, "ap-guangzhou")
+        # 万象优图的地域固定为ap-beijing（其他地域不支持）
+        client = iimage_client.IimageClient(cred, "ap-beijing")
         
         def to_b64(image):
             buf = io.BytesIO()
@@ -59,34 +61,36 @@ def stable_artifact_repair(img_pil, mask_pil):
         
         mask_blur = mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
         
-        # 修复点1：替换正确的请求类名（根据本地可用的类名调整）
-        # 如果你本地是 ImageInpaintingRemovalRequest 能运行，就用这个；否则换 ImageInpaintingRequest
-        try:
-            req = models.ImageInpaintingRemovalRequest()  # 优先尝试你的原类名
-        except AttributeError:
-            req = models.ImageInpaintingRequest()  # 备用类名
+        # 修正：使用iimage的ImageInpaintingRequest请求类
+        req = models.ImageInpaintingRequest()
+        req.Image = to_b64(img_pil)          # 原图Base64（参数名是Image，而非InputImage）
+        req.Mask = to_b64(mask_blur)        # 掩码图Base64
+        req.SessionId = "artifact_repair"   # 会话ID（自定义即可）
+        req.Version = "2.0"                 # 接口版本固定为2.0
         
-        req.InputImage = to_b64(img_pil)
-        req.Mask = to_b64(mask_blur)
+        # 调用万象优图的ImageInpainting接口
+        resp = client.ImageInpainting(req)
         
-        # 修复点2：匹配请求类名的调用方法
-        try:
-            resp = client.ImageInpaintingRemoval(req)  # 原方法名
-        except AttributeError:
-            resp = client.ImageInpainting(req)  # 备用方法名
-        
+        # 返回解码后的修复结果
         return base64.b64decode(resp.ResultImage)
     
+    except TencentCloudSDKException as e:
+        st.error(f"❌ 腾讯云API调用失败: {str(e)}")
+        # 失败时返回模糊后的原图（保证程序继续运行）
+        img_blur = img_pil.filter(ImageFilter.GaussianBlur(5))
+        buf = io.BytesIO()
+        img_blur.save(buf, format="PNG")
+        return buf.getvalue()
     except Exception as e:
         st.error(f"❌ AI 修復失敗: {str(e)}")
-        # 修复点3：失败时不返回 None，返回模糊后的原图（保证程序继续运行）
+        # 其他异常兜底
         img_blur = img_pil.filter(ImageFilter.GaussianBlur(5))
         buf = io.BytesIO()
         img_blur.save(buf, format="PNG")
         return buf.getvalue()
 
 # ==========================================
-# 以下代码完全保留你的原有逻辑，仅适配路径
+# 以下代码完全保留你的原有逻辑，无需修改
 # ==========================================
 def local_remove_bg(img_pil):
     try:
