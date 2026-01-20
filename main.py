@@ -3,18 +3,17 @@ import base64
 import io
 import time
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps, ImageEnhance
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageDraw
 import cv2
 from tencentcloud.common import credential
 from tencentcloud.aiart.v20221229 import aiart_client, models
 from rembg import remove
 
 # ==========================================
-# 1. 配置與常數（適配Streamlit Cloud + Python 3.13）
+# 1. 基础配置（适配最新版Streamlit）
 # ==========================================
+# 仅保留有效配置项，移除已废弃的配置
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
-st.set_option('deprecation.showPyplotGlobalUse', False)
-st.config.set_option("client.showErrorDetails", True)
 
 # ==========================================
 # 2. 核心 AI 邏輯
@@ -110,7 +109,8 @@ def init_session_state():
         'last_update': 0,
         'uploaded_img': None,
         'mask_data': None,  # 儲存手動繪製的遮罩
-        'stroke_width': 25  # 筆觸大小
+        'stroke_width': 25, # 筆觸大小
+        'click_coords': []  # 標記點座標
     }
     for key, value in default_states.items():
         if key not in st.session_state:
@@ -121,10 +121,12 @@ def generate_mask_from_click(img_pil, click_coords, stroke_w):
     """根據點擊座標生成遮罩"""
     mask = Image.new("L", img_pil.size, 0)
     draw = ImageDraw.Draw(mask)
+    display_w = 600
+    scale_x = img_pil.width / display_w
+    scale_y = img_pil.height / (img_pil.height * display_w / img_pil.width)
+    
     for (x, y) in click_coords:
         # 將顯示座標轉換為原始圖像座標
-        scale_x = img_pil.width / 600
-        scale_y = img_pil.height / (img_pil.height * 600 / img_pil.width)
         orig_x = int(x * scale_x)
         orig_y = int(y * scale_y)
         # 繪製圓形筆觸
@@ -134,7 +136,7 @@ def generate_mask_from_click(img_pil, click_coords, stroke_w):
     return mask
 
 # ==========================================
-# 5. 使用者介面（完全移除canvas依賴）
+# 5. 使用者介面（無任何過時配置）
 # ==========================================
 init_session_state()
 
@@ -163,17 +165,15 @@ if app_mode == "🎨 專家修復端":
             with col1:
                 st.subheader("🖍️ 標記殘缺區域")
                 # 原生圖像顯示 + 點擊標記
-                st.image(display_img, use_column_width=True)
+                st.image(display_img, use_column_width=True, caption="點擊圖片查看座標，輸入下方標記殘缺區域")
                 
                 # 點擊座標收集
-                click_x = st.number_input("點擊X座標（0-600）", 0, display_w, 300)
+                click_x = st.number_input("點擊X座標（0-{}）".format(display_w), 0, display_w, 300)
                 click_y = st.number_input("點擊Y座標（0-{}）".format(display_h), 0, display_h, int(display_h/2))
                 
                 col1_1, col1_2 = st.columns(2)
                 with col1_1:
                     if st.button("➕ 新增標記點"):
-                        if 'click_coords' not in st.session_state:
-                            st.session_state.click_coords = []
                         st.session_state.click_coords.append((click_x, click_y))
                         st.success(f"已新增標記點 ({click_x}, {click_y})")
                 
@@ -184,18 +184,17 @@ if app_mode == "🎨 專家修復端":
                         st.info("標記已清空")
                 
                 # 顯示已標記的點
-                if 'click_coords' in st.session_state and st.session_state.click_coords:
-                    st.write("已標記的區域座標：")
+                if st.session_state.click_coords:
+                    st.write("📝 已標記的區域座標：")
                     for i, (x, y) in enumerate(st.session_state.click_coords):
                         st.write(f"{i+1}. ({x}, {y})")
 
             with col2:
                 st.subheader("✨ 修復與同步")
                 if st.button("🚀 開始 AI 修復"):
-                    if 'click_coords' in st.session_state and st.session_state.click_coords:
+                    if st.session_state.click_coords:
                         with st.spinner("AI 正在分析並補全..."):
                             # 生成遮罩
-                            from PIL import ImageDraw
                             mask = generate_mask_from_click(
                                 raw_img, 
                                 st.session_state.click_coords, 
@@ -207,7 +206,7 @@ if app_mode == "🎨 專家修復端":
                             res_bytes = stable_artifact_repair(raw_img, mask)
                             if res_bytes:
                                 st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
-                                st.success("修復完成！")
+                                st.success("✅ 修復完成！")
                     else:
                         st.warning("⚠️ 請先標記殘缺區域！")
 
@@ -232,7 +231,8 @@ if app_mode == "🎨 專家修復端":
                             st.toast("✅ 修復圖已推送到全像螢幕！", icon="🔮")
         except Exception as e:
             st.error(f"❌ 處理圖片失敗: {str(e)}")
-            st.exception(e)
+            # 演示時可註解此行，避免過多技術細節暴露
+            # st.exception(e)
 
 else:
     # 🌌 全像投影端
