@@ -3,34 +3,35 @@ import base64
 import io
 import time
 import numpy as np
-from PIL import Image, ImageFilter, ImageOps, ImageEnhance
+from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageDraw
 from tencentcloud.common import credential
 from tencentcloud.aiart.v20221229 import aiart_client, models
 from rembg import remove
 import matplotlib.pyplot as plt
 import cv2
+from streamlit_drawable_canvas import st_canvas
 
 # ==========================================
-# 1. 基础配置（适配最新版Streamlit）
+# 1. 基礎配置（適配最新版Streamlit）
 # ==========================================
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
-plt.switch_backend('Agg')  # 避免matplotlib后端冲突
+plt.switch_backend('Agg')  # 避免matplotlib後端衝突
 
 # ==========================================
-# 2. 核心 AI 邏輯（密钥配置提示优化）
+# 2. 核心 AI 邏輯（金鑰配置提示優化）
 # ==========================================
 def get_credentials():
     """安全取得騰訊雲金鑰"""
     try:
-        # 优先读取Secrets，本地测试时可临时替换为你的密钥（演示后注释）
+        # 優先讀取Secrets，本地測試時可臨時替換為你的金鑰（演示後註釋）
         SECRET_ID = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_ID", "")
         SECRET_KEY = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_KEY", "")
         
         if not SECRET_ID or not SECRET_KEY:
             st.warning("⚠️ 未檢測到騰訊雲金鑰！本地測試可臨時填入金鑰，部署時請在Streamlit Secrets配置。")
-            # 【本地测试用】取消下面两行注释，填入你的密钥（演示后务必注释）
-            # SECRET_ID = "你的测试ID"
-            # SECRET_KEY = "你的测试KEY"
+            # 【本地測試用】取消下面兩行註釋，填入你的金鑰（演示後務必註釋）
+            # SECRET_ID = "你的測試ID"
+            # SECRET_KEY = "你的測試KEY"
             return None, None
         return SECRET_ID, SECRET_KEY
     except Exception as e:
@@ -42,7 +43,7 @@ def stable_artifact_repair(img_pil, mask_pil):
         SECRET_ID, SECRET_KEY = get_credentials()
         if not SECRET_ID or not SECRET_KEY:
             st.info("ℹ️ 使用本地模擬修復效果（無金鑰時的備用方案）")
-            # 无密钥时的备用方案：返回模糊后的原图（演示时不影响展示流程）
+            # 無金鑰時的備用方案：返回模糊後的原圖（演示時不影響展示流程）
             return img_pil.filter(ImageFilter.GaussianBlur(2)).tobytes()
         
         cred = credential.Credential(SECRET_ID, SECRET_KEY)
@@ -61,7 +62,7 @@ def stable_artifact_repair(img_pil, mask_pil):
         return base64.b64decode(resp.ResultImage)
     except Exception as e:
         st.error(f"❌ AI 修復失敗: {str(e)}")
-        # 备用方案：返回原图，避免演示中断
+        # 備用方案：返回原圖，避免演示中斷
         buf = io.BytesIO()
         img_pil.save(buf, format="PNG")
         return buf.getvalue()
@@ -109,7 +110,7 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
         return Image.new("RGB", (1024, 1024), (0, 0, 0))
 
 # ==========================================
-# 4. 筆刷標記工具（恢復直觀繪圖功能）
+# 4. 筆刷標記工具（可交互繪圖版本）
 # ==========================================
 def init_session_state():
     default_states = {
@@ -125,39 +126,53 @@ def init_session_state():
         if key not in st.session_state:
             st.session_state[key] = value
 
-# 創建可繪圖的介面（替代原canvas組件）
+# 創建可交互繪圖的介面（基於streamlit-drawable-canvas）
 def draw_on_image(img_pil, stroke_w):
     st.subheader("🖍️ 標記殘缺區域（滑鼠拖動畫筆）")
     
-    # 轉換為OpenCV格式便於繪圖
-    img_cv = cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
-    height, width = img_cv.shape[:2]
+    # 調整圖片尺寸，避免畫布過大影響效能
+    max_size = 800
+    width, height = img_pil.size
+    if width > max_size or height > max_size:
+        ratio = min(max_size/width, max_size/height)
+        new_size = (int(width*ratio), int(height*ratio))
+        img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
     
-    # 創建繪圖介面
-    draw_canvas = st.empty()
-    draw_canvas.image(img_cv, channels="BGR", use_column_width=True)
+    img_np = np.array(img_pil)
     
-    # 滑鼠事件處理（簡化版筆刷）
-    if st.button("🎨 開啟繪圖模式"):
-        st.info("請拖動滑鼠在圖片上標記殘缺區域，標記完成後點擊「停止繪圖」")
-        # 模擬繪圖過程（實際演示時可手動標記後生成遮罩）
-        # 這裡用互動式按鈕模擬筆刷，避免依賴第三方組件
-        mask = np.zeros((height, width), dtype=np.uint8)
-        # 預設標記一個區域（演示用），實際可根據用戶輸入調整
-        cv2.circle(mask, (width//2, height//2), 50, 255, -1)
-        st.session_state.mask_img = Image.fromarray(mask)
-        st.success("✅ 已標記殘缺區域！")
+    # 創建可繪製的交互畫布
+    canvas_result = st_canvas(
+        fill_color="rgba(255, 255, 255, 0.0)",  # 填充透明
+        stroke_width=stroke_w,
+        stroke_color="#FF0000",  # 紅色筆刷（醒目易見）
+        background_image=img_pil,
+        update_streamlit=True,
+        height=img_pil.height,
+        width=img_pil.width,
+        drawing_mode="freedraw",  # 自由繪製模式
+        key="repair_canvas",
+    )
+
+    # 處理繪製結果，生成修復用遮罩
+    mask_img = None
+    if canvas_result.image_data is not None:
+        # 提取使用者繪製的區域（紅色通道）
+        mask_np = canvas_result.image_data[:, :, 0]  # 取紅色通道
+        mask_np = (mask_np > 0).astype(np.uint8) * 255  # 轉換為黑白遮罩
+        mask_img = Image.fromarray(mask_np)
+        st.session_state.mask_img = mask_img
+        
+        # 預覽遮罩效果
+        col1, col2 = st.columns(2)
+        with col1:
+            st.image(img_pil, caption="原始圖片", use_column_width=True)
+        with col2:
+            st.image(mask_img, caption="標記的修復區域（遮罩）", use_column_width=True)
     
-    if st.button("⏹️ 停止繪圖"):
-        if st.session_state.mask_img is None:
-            # 默認遮罩（避免空值）
-            mask = np.zeros((height, width), dtype=np.uint8)
-            st.session_state.mask_img = Image.fromarray(mask)
-    
-    return st.session_state.mask_img
+    return mask_img
 
 # ==========================================
-# 5. 使用者介面（恢復筆刷+金鑰提示）
+# 5. 使用者介面（繁體中文 + 可交互繪圖）
 # ==========================================
 init_session_state()
 
@@ -182,7 +197,7 @@ if app_mode == "🎨 專家修復端":
             
             col1, col2 = st.columns(2)
             with col1:
-                # 恢復筆刷繪圖功能
+                # 使用新的可交互繪圖函數
                 mask_img = draw_on_image(display_img, st.session_state.stroke_width)
 
             with col2:
@@ -295,4 +310,3 @@ else:
         """,
         unsafe_allow_html=True
     )
-
