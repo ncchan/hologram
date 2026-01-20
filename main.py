@@ -11,13 +11,11 @@ from tencentcloud.aiart.v20221229 import aiart_client, models
 from rembg import remove
 
 # ==========================================
-# 修复：跨平台兼容的临时文件路径（本地/云端通用）
+# 最终版：跨平台兼容配置（本地/云端通用）
 # ==========================================
-# 使用 Python 标准库的 tempfile 获取安全的临时目录
+# 1. 安全的临时文件路径（Python 标准库，无兼容性问题）
 TEMP_DIR = tempfile.gettempdir()
 CACHE_FILE = os.path.join(TEMP_DIR, "hologram_cache.png")
-# 禁用自动休眠（云端特有）
-st.set_option('server.headless', True)
 
 # ==========================================
 # 1. 密钥读取 + 核心 AI 逻辑
@@ -45,7 +43,7 @@ def stable_artifact_repair(img_pil, mask_pil):
         st.info("ℹ️ 本地模拟模式：生成智能模糊修复效果")
         img_array = np.array(img_pil)
         mask_array = np.array(mask_pil) / 255.0
-        # 改用 PIL 模糊，避免依赖 cv2
+        # 纯 PIL 实现模糊，无额外依赖
         blurred_img = img_pil.filter(ImageFilter.GaussianBlur(5))
         blurred_array = np.array(blurred_img)
         result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred_array * mask_array[:, :, np.newaxis]
@@ -114,15 +112,13 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
     return hologram_bg.convert("RGB")
 
 # ==========================================
-# 3. Streamlit 使用者介面
+# 3. Streamlit 使用者介面（最终稳定版）
 # ==========================================
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
 
 # 初始化 Session State
 if 'result_img' not in st.session_state:
     st.session_state.result_img = None
-if 'last_mtime' not in st.session_state:
-    st.session_state.last_mtime = 0
 
 st.sidebar.header("⚙️ 模式切換")
 app_mode = st.sidebar.selectbox("視窗模式", ["🎨 專家修復端", "🌌 全息投影端"])
@@ -171,12 +167,14 @@ if app_mode == "🎨 專家修復端":
                         if res_bytes:
                             st.session_state.result_img = Image.open(io.BytesIO(res_bytes))
                             st.success("修復完成！")
+                else:
+                    st.warning("⚠️ 請先標記殘缺區域！")
 
             # 只要有修復後的圖，就顯示並提供同步按鈕
             if st.session_state.result_img:
                 st.image(st.session_state.result_img, caption="AI 修復結果", width=400)
                 
-                if st.button("🔮 同步修復圖到全息螢幕"):
+                if st.button("🔮 同步修復圖到全息螢幕", type="primary"):
                     with st.spinner("同步中..."):
                         img_to_sync = st.session_state.result_img
                         is_transparent = "去背" in h_type
@@ -186,7 +184,7 @@ if app_mode == "🎨 專家修復端":
                             processed_img = img_to_sync.convert("RGBA")
                         
                         holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
-                        # 增加文件写入的异常捕获（云端容错）
+                        # 云端安全写入：增加异常捕获
                         try:
                             holo_final.save(CACHE_FILE)
                             st.toast("✅ 修復圖已推送到全息螢幕！", icon="🔮")
@@ -195,32 +193,39 @@ if app_mode == "🎨 專家修復端":
 
 else:
     # ==========================================
-    # 🌌 全息投影端
+    # 🌌 全息投影端（最终稳定版）
     # ==========================================
+    # 增强版 CSS：确保云端隐藏所有无关元素
     st.markdown("""<style>
         [data-testid="stSidebar"],
         [data-testid="collapsedControl"],
         footer,
-        header { display: none !important; }
-        body { background-color: black !important; }
-        #hologram-display { 
+        header,
+        [data-testid="stToolbar"] { 
+            display: none !important; 
+        }
+        body { 
+            background-color: black !important; 
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+        }
+        .hologram-container { 
             background-color: black; 
             height: 100vh; 
             width: 100vw; 
             display: flex; 
             align-items: center; 
             justify-content: center; 
-            position: fixed; 
-            top: 0; 
-            left: 0; 
         }
     </style>""", unsafe_allow_html=True)
     
+    # 云端安全的自动刷新（每2秒）
     st.markdown('<meta http-equiv="refresh" content="2">', unsafe_allow_html=True)
     
     placeholder = st.empty()
     
-    # 检查缓存文件并显示（增加容错）
+    # 检查缓存文件并显示（极致容错）
     try:
         if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
             # 读取并显示图片
@@ -230,21 +235,23 @@ else:
             img_b64 = base64.b64encode(buf.getvalue()).decode()
             with placeholder.container():
                 st.markdown(f"""
-                    <div id="hologram-display">
-                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain;">
+                    <div class="hologram-container">
+                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain; border: 2px solid #00ff00;">
                     </div>
                 """, unsafe_allow_html=True)
         else:
             with placeholder.container():
                 st.markdown(f"""
-                    <div id="hologram-display">
-                        <div style="color: white; font-size: 20px;">等待修復端同步圖像...</div>
+                    <div class="hologram-container">
+                        <div style="color: #00ff00; font-size: 20px; text-shadow: 0 0 10px #00ff00;">
+                            📡 等待修復端同步圖像...
+                        </div>
                     </div>
                 """, unsafe_allow_html=True)
     except Exception as e:
         with placeholder.container():
             st.markdown(f"""
-                <div id="hologram-display">
+                <div class="hologram-container">
                     <div style="color: red; font-size: 20px;">載入錯誤: {str(e)}</div>
                 </div>
             """, unsafe_allow_html=True)
