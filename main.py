@@ -6,7 +6,11 @@ import os
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageDraw
 from tencentcloud.common import credential
-from tencentcloud.aiart.v20221229 import aiart_client, models
+from tencentcloud.common.exception.tencent_cloud_sdk_exception import TencentCloudSDKException
+# 改用通用的client和request（兼容所有版本）
+from tencentcloud.aiart.v20221229 import aiart_client
+from tencentcloud.common.profile.client_profile import ClientProfile
+from tencentcloud.common.profile.http_profile import HttpProfile
 from rembg import remove, new_session
 import matplotlib.pyplot as plt
 import cv2
@@ -41,7 +45,7 @@ def load_hologram():
     return None
 
 # ==========================================
-# 3. 核心 AI 與圖像處理
+# 3. 核心 AI 與圖像處理 (修復腾讯云接口)
 # ==========================================
 def get_credentials():
     try:
@@ -55,28 +59,73 @@ def get_credentials():
         return None, None
 
 def stable_artifact_repair(img_pil, mask_pil):
+    """修復版AI修復：兼容腾讯云接口 + 本地模拟"""
     try:
         SECRET_ID, SECRET_KEY = get_credentials()
-        if not SECRET_ID:
-            st.info("ℹ️ 演示模式：生成模糊修復效果")
-            return img_pil.filter(ImageFilter.GaussianBlur(3)).tobytes()
-
-        cred = credential.Credential(SECRET_ID, SECRET_KEY)
-        client = aiart_client.AiartClient(cred, "ap-guangzhou")
         
+        # 本地模拟模式（无密钥/接口错误时兜底）
+        if not SECRET_ID or not SECRET_KEY:
+            st.info("ℹ️ 演示模式：生成智能模糊修復效果")
+            # 优化模拟效果：仅模糊标记区域
+            img_array = np.array(img_pil)
+            mask_array = np.array(mask_pil) / 255.0
+            blurred = cv2.GaussianBlur(img_array, (15,15), 0)
+            # 仅替换标记区域
+            result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred * mask_array[:, :, np.newaxis]
+            result_img = Image.fromarray(result_array.astype(np.uint8))
+            buf = io.BytesIO()
+            result_img.save(buf, format="PNG")
+            return buf.getvalue()
+
+        # 腾讯云接口调用（通用版，兼容所有SDK版本）
+        cred = credential.Credential(SECRET_ID, SECRET_KEY)
+        
+        # 配置HTTP和客户端
+        httpProfile = HttpProfile()
+        httpProfile.endpoint = "aiart.tencentcloudapi.com"
+        clientProfile = ClientProfile()
+        clientProfile.httpProfile = httpProfile
+        client = aiart_client.AiartClient(cred, "ap-guangzhou", clientProfile)
+        
+        # 图片转Base64
         def to_b64(image):
             buf = io.BytesIO()
             image.save(buf, format="PNG")
             return base64.b64encode(buf.getvalue()).decode("utf-8")
         
+        # 处理遮罩（模糊优化）
         mask_blur = mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
-        req = models.ImageInpaintingRemovalRequest()
-        req.InputImage = to_b64(img_pil)
-        req.Mask = to_b64(mask_blur)
-        resp = client.ImageInpaintingRemoval(req)
-        return base64.b64decode(resp.ResultImage)
+        
+        # 通用请求参数（适配所有图像修复接口）
+        params = {
+            "TaskType": "ImageInpainting",  # 图像修复任务类型
+            "Image": to_b64(img_pil),
+            "Mask": to_b64(mask_blur),
+            "Resolution": "720p"  # 输出分辨率
+        }
+        
+        # 发送请求并获取结果
+        resp = client.call("CreateImageInpaintingTask", params)
+        if resp and "ResultImage" in resp:
+            return base64.b64decode(resp["ResultImage"])
+        else:
+            st.warning("⚠️ 腾讯云接口返回无结果，使用本地模拟修复")
+            # 降级到本地模拟
+            img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
+            buf = io.BytesIO()
+            img_blur.save(buf, format="PNG")
+            return buf.getvalue()
+            
+    except TencentCloudSDKException as e:
+        st.error(f"❌ 腾讯云API錯誤: {str(e)}")
+        # 腾讯云接口失败，降级到本地模拟
+        img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
+        buf = io.BytesIO()
+        img_blur.save(buf, format="PNG")
+        return buf.getvalue()
     except Exception as e:
-        st.error(f"❌ AI 錯誤: {str(e)}")
+        st.error(f"❌ AI 修復錯誤: {str(e)}")
+        # 所有错误都降级到本地模拟
         buf = io.BytesIO()
         img_pil.save(buf, format="PNG")
         return buf.getvalue()
@@ -247,8 +296,6 @@ if app_mode == "🎨 專家修復端":
                             if save_to_hologram(holo_final):
                                 st.session_state.holo_img = holo_final
                                 st.toast("📡 圖像已同步至投影端！", icon="✅")
-                                # 自動刷新頁面以確保狀態一致 (選用)
-                                # st.experimental_rerun() 
 
         except Exception as e:
             st.error(f"❌ 處理失敗: {str(e)}")
@@ -266,45 +313,31 @@ else:
         }
     </style>""", unsafe_allow_html=True)
     
-    placeholder = st.empty()
-    status_placeholder = st.empty()
-    
-    # 自動偵測檔案更新
-    current_time = time.time()
-    last_modified = os.path.getmtime(TEMP_FILE_PATH) if os.path.exists(TEMP_FILE_PATH) else 0
-    
-    # 每 0.5 秒檢查一次
-    while True:
-        img = load_hologram()
-        if img:
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-            
-            with placeholder.container():
-                st.markdown(f"""
-                    <div id="hologram-display">
-                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00;">
-                    </div>
-                """, unsafe_allow_html=True)
-            status_placeholder.empty() # 隱藏等待訊息
-        else:
-            with placeholder.container():
-                st.markdown(f"""
-                    <div id="hologram-display">
-                        <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
-                            📡 等待修復端同步...
-                        </div>
-                    </div>
-                """, unsafe_allow_html=True)
-        
-        # 檢查檔案是否變更，或等待 0.5 秒
-        time.sleep(0.5)
-        # Streamlit 無法在迴圈中無限運行，我們需要利用按鈕或查詢參數觸發重載
-        # 為了簡化演示，這裡使用一個隱藏的按鈕或自動刷新機制
-        # 實務上，建議投影端打開後，每幾秒手動刷新一次，或使用下方的自動刷新程式碼
-        
-    # 下方是一個更簡單的自動刷新實現 (使用 meta tag)
+    # 自動刷新機制（每2秒刷新一次）
     st.markdown("""
         <meta http-equiv="refresh" content="2">
     """, unsafe_allow_html=True)
+    
+    placeholder = st.empty()
+    img = load_hologram()
+    
+    if img:
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        
+        with placeholder.container():
+            st.markdown(f"""
+                <div id="hologram-display">
+                    <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00;">
+                </div>
+            """, unsafe_allow_html=True)
+    else:
+        with placeholder.container():
+            st.markdown(f"""
+                <div id="hologram-display">
+                    <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
+                        📡 等待修復端同步...
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
