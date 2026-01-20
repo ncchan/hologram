@@ -1,15 +1,15 @@
-# 基础框架
-streamlit>=1.30.0
+# 基础框架（兼容Python 3.10）
+streamlit>=1.28.0
 streamlit-drawable-canvas>=0.9.2
 
 # 图像处理核心库
-matplotlib>=3.8.0
-numpy>=1.26.0
-Pillow>=10.2.0
+matplotlib>=3.7.0
+numpy>=1.24.0
+Pillow>=9.5.0
 rembg>=2.0.50
-opencv-python>=4.9.0.80
-onnxruntime>=1.17.0  # 新增：解决rembg依赖问题
-onnx>=1.15.0         # 新增：onnxruntime配套依赖
+opencv-python>=4.8.0.76
+onnxruntime>=1.16.0  # 适配Python 3.10的稳定版本
+onnx>=1.14.0
 
 # 腾讯云AI接口
-tencentcloud-sdk-python>=3.0.1100
+tencentcloud-sdk-python>=3.0.1000
