@@ -2,6 +2,7 @@ import streamlit as st
 import base64
 import io
 import os
+import time
 import numpy as np
 import cv2
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
@@ -14,13 +15,13 @@ from tencentcloud.common.profile.http_profile import HttpProfile
 from rembg import remove, new_session
 
 # ==========================================
-# 🔴 核心修復：全域配置與 URL 鎖定機制
+# 🔴 全域配置與 URL 狀態鎖定 (核心修復)
 # ==========================================
 CACHE_FILE = "hologram_cache.png"
 
-# 獲取 URL 參數
+# 獲取當前 URL 參數
 query_params = st.query_params
-current_page = query_params.get("page", ["repair"])[0]
+current_page = query_params.get("view", ["repair"])[0] # 預設為修復端
 
 # 設定頁面配置
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
@@ -150,7 +151,7 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
         return Image.new("RGB", (1024, 1024), (0, 0, 0))
 
 # ==========================================
-# 4. 頁面渲染邏輯 (根據 URL 參數)
+# 4. 頁面渲染邏輯
 # ==========================================
 
 # 初始化 Session State
@@ -159,82 +160,100 @@ if 'result_img' not in st.session_state:
 if 'mask_img' not in st.session_state:
     st.session_state.mask_img = None
 
-# 側邊欄導航 (僅供手動切換，刷新時會被 URL 覆蓋)
+# --- 側邊欄導航 ---
 with st.sidebar:
     st.header("⚙️ 系統選單")
-    # 建立導航按鈕
+    
+    # 使用按鈕進行導航，點擊後改變 URL
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("🎨 專家修復端"):
+        if st.button("🎨 專家修復端", use_container_width=True):
             st.query_params.clear()
-            st.query_params["page"] = "repair"
-            st.rerun()
+            st.query_params["view"] = "repair"
+            st.rerun() # 強制重新運行
+    
     with col2:
-        if st.button("🌌 全息投影端"):
+        if st.button("🌌 全息投影端", use_container_width=True):
             st.query_params.clear()
-            st.query_params["page"] = "holo"
-            st.rerun()
+            st.query_params["view"] = "holo"
+            st.rerun() # 強制重新運行
 
 # --- 邏輯分流 ---
 
 if current_page == "holo":
     # ==========================================
-    # 🌌 全息投影端 (URL 鎖定版)
+    # 🌌 全息投影端 (使用 Meta Refresh 穩定刷新)
     # ==========================================
+    
+    # 隱藏側邊欄
     st.markdown("""<style>
         [data-testid="stSidebar"] {display: none;}
         footer {visibility: hidden;}
-        body {background-color: black !important;}
-        #hologram-display { 
-            background-color: black; 
-            height: 100vh; 
-            width: 100vw; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            position: fixed; 
-            top: 0; 
-            left: 0; 
-        }
+        body {background-color: black !important; overflow: hidden;}
     </style>""", unsafe_allow_html=True)
     
-    # 自動刷新機制 (使用 JS 刷新內容而非整頁刷新，防止閃爍)
-    st.markdown("""
-    <script>
-        setTimeout(function(){
-            window.parent.document.getElementById('hologram-iframe').src = window.parent.document.getElementById('hologram-iframe').src;
-        }, 3000);
-    </script>
-    """, unsafe_allow_html=True)
+    # 🔴 核心修復：使用標準的 HTML Meta 標籤進行自動刷新
+    # 這是最穩定的方法，每隔 2 秒刷新一次頁面
+    st.markdown('<meta http-equiv="refresh" content="2">', unsafe_allow_html=True)
 
+    # 創建全屏黑色容器
     placeholder = st.empty()
     
-    if os.path.exists(CACHE_FILE):
-        try:
+    try:
+        # 檢查圖片是否存在且不是空檔
+        if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
+            # 讀取圖片
             img = Image.open(CACHE_FILE)
+            
+            # 轉換為 Base64 以在 HTML 中顯示
             buf = io.BytesIO()
             img.save(buf, format="PNG")
             img_b64 = base64.b64encode(buf.getvalue()).decode()
+            
             with placeholder.container():
                 st.markdown(f"""
-                    <div id="hologram-display">
-                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain; border: 2px solid #00ff00;">
+                    <div style="
+                        display: flex; 
+                        justify-content: center; 
+                        align-items: center; 
+                        height: 100vh; 
+                        background: black;
+                    ">
+                        <img src="data:image/png;base64,{img_b64}" style="max-height: 90vh; border: 2px solid #00ff00; border-radius: 10px;">
                     </div>
                 """, unsafe_allow_html=True)
-        except:
+        else:
+            # 沒有圖片時顯示等待訊息
             with placeholder.container():
                 st.markdown(f"""
-                    <div id="hologram-display">
-                        <div style="color: #00ff00; font-size: 24px;">❌ 圖片加載錯誤</div>
+                    <div style="
+                        display: flex; 
+                        justify-content: center; 
+                        align-items: center; 
+                        height: 100vh; 
+                        background: black; 
+                        color: #00ff00; 
+                        font-family: sans-serif;
+                    ">
+                        <div style="text-align: center;">
+                            <div style="font-size: 3rem; margin-bottom: 20px;">📡</div>
+                            <div style="font-size: 1.5rem; text-shadow: 0 0 10px #00ff00;">等待修復端同步圖像...</div>
+                        </div>
                     </div>
                 """, unsafe_allow_html=True)
-    else:
+    except Exception as e:
+        # 捕捉任何讀取錯誤（如圖片正在被寫入）
         with placeholder.container():
             st.markdown(f"""
-                <div id="hologram-display">
-                    <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
-                        📡 等待修復端同步...
-                    </div>
+                <div style="
+                    display: flex; 
+                    justify-content: center; 
+                    align-items: center; 
+                    height: 100vh; 
+                    background: black; 
+                    color: red;
+                ">
+                    <div>圖片加載中或出錯: {str(e)}</div>
                 </div>
             """, unsafe_allow_html=True)
 
