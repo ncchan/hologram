@@ -2,6 +2,7 @@ import streamlit as st
 import base64
 import io
 import os
+import tempfile
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance
 from streamlit_drawable_canvas import st_canvas
@@ -10,22 +11,23 @@ from tencentcloud.aiart.v20221229 import aiart_client, models
 from rembg import remove
 
 # ==========================================
-# 适配云端的配置
+# 修复：跨平台兼容的临时文件路径（本地/云端通用）
 # ==========================================
-CACHE_FILE = os.path.join(st.runtime.get_instance().temp_dir, "hologram_cache.png")
+# 使用 Python 标准库的 tempfile 获取安全的临时目录
+TEMP_DIR = tempfile.gettempdir()
+CACHE_FILE = os.path.join(TEMP_DIR, "hologram_cache.png")
+# 禁用自动休眠（云端特有）
 st.set_option('server.headless', True)
 
 # ==========================================
-# 1. 密钥读取 + 核心 AI 逻辑（关键修改：使用 st.secrets）
+# 1. 密钥读取 + 核心 AI 逻辑
 # ==========================================
 def get_tencent_credentials():
     """安全读取腾讯云密钥（本地/云端通用）"""
     try:
-        # 从 Streamlit Secrets 读取密钥（支持嵌套结构）
         SECRET_ID = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_ID", "")
         SECRET_KEY = st.secrets.get("TENCENT_CLOUD", {}).get("SECRET_KEY", "")
         
-        # 校验密钥是否有效
         if not SECRET_ID or not SECRET_KEY:
             st.warning("⚠️ 未检测到腾讯云密钥，将使用本地模拟修复模式")
             return None, None
@@ -43,8 +45,10 @@ def stable_artifact_repair(img_pil, mask_pil):
         st.info("ℹ️ 本地模拟模式：生成智能模糊修复效果")
         img_array = np.array(img_pil)
         mask_array = np.array(mask_pil) / 255.0
-        blurred = cv2.GaussianBlur(img_array, (15,15), 0) if 'cv2' in locals() else img_pil.filter(ImageFilter.GaussianBlur(5))
-        result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred * mask_array[:, :, np.newaxis]
+        # 改用 PIL 模糊，避免依赖 cv2
+        blurred_img = img_pil.filter(ImageFilter.GaussianBlur(5))
+        blurred_array = np.array(blurred_img)
+        result_array = img_array * (1 - mask_array[:, :, np.newaxis]) + blurred_array * mask_array[:, :, np.newaxis]
         result_img = Image.fromarray(result_array.astype(np.uint8))
         buf = io.BytesIO()
         result_img.save(buf, format="PNG")
@@ -82,7 +86,7 @@ def local_remove_bg(img_pil):
         return img_pil.convert("RGBA")
 
 # ==========================================
-# 2. 全息投影演算法（无修改）
+# 2. 全息投影演算法
 # ==========================================
 def create_pseudo_3d_hologram(img_pil, is_transparent=True):
     bg_size = 1024
@@ -110,7 +114,7 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
     return hologram_bg.convert("RGB")
 
 # ==========================================
-# 3. Streamlit 使用者介面（无核心修改）
+# 3. Streamlit 使用者介面
 # ==========================================
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
 
@@ -182,7 +186,7 @@ if app_mode == "🎨 專家修復端":
                             processed_img = img_to_sync.convert("RGBA")
                         
                         holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
-                        # 云端安全写入：增加异常捕获
+                        # 增加文件写入的异常捕获（云端容错）
                         try:
                             holo_final.save(CACHE_FILE)
                             st.toast("✅ 修復圖已推送到全息螢幕！", icon="🔮")
@@ -216,7 +220,7 @@ else:
     
     placeholder = st.empty()
     
-    # 检查缓存文件并显示
+    # 检查缓存文件并显示（增加容错）
     try:
         if os.path.exists(CACHE_FILE) and os.path.getsize(CACHE_FILE) > 0:
             # 读取并显示图片
