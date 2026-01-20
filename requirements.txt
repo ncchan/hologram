@@ -1,21 +1,9 @@
-# 核心框架（适配Streamlit Cloud最新环境）
-streamlit>=1.50.0,<2.0.0
-
-# 腾讯云SDK
+# Python版本兼容配置
+streamlit>=1.30.0
+streamlit-drawable-canvas>=0.9.2
+matplotlib>=3.8.0
+numpy>=1.26.0
+Pillow>=10.2.0
+rembg>=2.0.50
+opencv-python>=4.9.0.80
 tencentcloud-sdk-python>=3.0.1100
-
-# 图像处理（兼容Python 3.13）
-Pillow>=10.3.0,<11.0.0
-numpy>=1.26.4,<2.0.0
-rembg>=2.0.57,<3.0.0
-
-# rembg依赖（无兼容性问题）
-onnxruntime>=1.18.0,<2.0.0
-opencv-python-headless>=4.9.0.80,<5.0.0
-
-# 其他基础依赖
-python-multipart>=0.0.9
-typing-extensions>=4.9.0
-
-# 解决 matplotlib 缺失问题
-matplotlib>=3.0.0
