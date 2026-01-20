@@ -13,11 +13,20 @@ from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 from rembg import remove, new_session
 
-# 設定快取檔案
+# ==========================================
+# 🔴 核心修復：全域配置與 URL 鎖定機制
+# ==========================================
 CACHE_FILE = "hologram_cache.png"
 
+# 獲取 URL 參數
+query_params = st.query_params
+current_page = query_params.get("page", ["repair"])[0]
+
+# 設定頁面配置
+st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
+
 # ==========================================
-# 1. 金鑰獲取函數（使用你指定的方式）
+# 1. 金鑰獲取函數
 # ==========================================
 def get_credentials():
     try:
@@ -31,15 +40,13 @@ def get_credentials():
         return None, None
 
 # ==========================================
-# 2. 核心 AI 邏輯（整合金鑰函數）
+# 2. 核心 AI 邏輯
 # ==========================================
 def stable_artifact_repair(img_pil, mask_pil):
-    """整合金鑰函數 + 腾讯云接口 + 本地模拟兜底"""
     try:
-        # 1. 獲取金鑰
         SECRET_ID, SECRET_KEY = get_credentials()
         
-        # 2. 本地模拟模式（無金鑰時）
+        # 本地模拟模式（無金鑰時）
         if not SECRET_ID or not SECRET_KEY:
             st.info("ℹ️ 演示模式：生成智能模糊修復效果")
             img_array = np.array(img_pil)
@@ -51,39 +58,31 @@ def stable_artifact_repair(img_pil, mask_pil):
             result_img.save(buf, format="PNG")
             return buf.getvalue()
 
-        # 3. 腾讯云接口調用（有金鑰時）
+        # 腾讯云接口調用
         cred = credential.Credential(SECRET_ID, SECRET_KEY)
-        
-        # 配置HTTP和客户端
         httpProfile = HttpProfile()
         httpProfile.endpoint = "aiart.tencentcloudapi.com"
         clientProfile = ClientProfile()
         clientProfile.httpProfile = httpProfile
         client = aiart_client.AiartClient(cred, "ap-guangzhou", clientProfile)
         
-        # 圖片轉Base64
         def to_b64(image):
             buf = io.BytesIO()
             image.save(buf, format="PNG")
             return base64.b64encode(buf.getvalue()).decode("utf-8")
         
-        # 處理遮罩
         mask_blur = mask_pil.filter(ImageFilter.GaussianBlur(radius=3))
-        
-        # 通用請求參數（兼容所有版本）
         params = {
             "Image": to_b64(img_pil),
             "Mask": to_b64(mask_blur),
             "Action": "ImageInpainting"
         }
         
-        # 發送請求
         resp = client.call("ImageInpainting", params)
         if resp and "ResultImage" in resp:
             return base64.b64decode(resp["ResultImage"])
         else:
-            st.warning("⚠️ 腾讯云接口返回無結果，使用本地模拟修復")
-            # 降級到本地模拟
+            st.warning("⚠️ 接口返回無結果，使用本地模拟")
             img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
             buf = io.BytesIO()
             img_blur.save(buf, format="PNG")
@@ -91,26 +90,22 @@ def stable_artifact_repair(img_pil, mask_pil):
             
     except TencentCloudSDKException as e:
         st.error(f"❌ 腾讯云API錯誤: {str(e)}")
-        # 腾讯云接口失敗，降級到本地模拟
         img_blur = img_pil.filter(ImageFilter.GaussianBlur(3))
         buf = io.BytesIO()
         img_blur.save(buf, format="PNG")
         return buf.getvalue()
     except Exception as e:
         st.error(f"❌ AI 修復失敗: {str(e)}")
-        # 最終兜底：返回原圖
         buf = io.BytesIO()
         img_pil.save(buf, format="PNG")
         return buf.getvalue()
 
 def local_remove_bg(img_pil):
-    """穩定的去背功能"""
     try:
         session = new_session("isnet-general-use")
         return remove(img_pil, session=session)
     except Exception as e:
         st.warning(f"⚠️ AI去背失敗，使用顏色去背: {str(e)}")
-        # 備用方案：白色變透明
         img_rgba = img_pil.convert("RGBA")
         datas = img_rgba.getdata()
         new_data = []
@@ -155,9 +150,8 @@ def create_pseudo_3d_hologram(img_pil, is_transparent=True):
         return Image.new("RGB", (1024, 1024), (0, 0, 0))
 
 # ==========================================
-# 4. Streamlit 使用者介面（完整功能）
+# 4. 頁面渲染邏輯 (根據 URL 參數)
 # ==========================================
-st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
 
 # 初始化 Session State
 if 'result_img' not in st.session_state:
@@ -165,16 +159,95 @@ if 'result_img' not in st.session_state:
 if 'mask_img' not in st.session_state:
     st.session_state.mask_img = None
 
-st.sidebar.header("⚙️ 模式切換")
-app_mode = st.sidebar.selectbox("視窗模式", ["🎨 專家修復端", "🌌 全息投影端"])
+# 側邊欄導航 (僅供手動切換，刷新時會被 URL 覆蓋)
+with st.sidebar:
+    st.header("⚙️ 系統選單")
+    # 建立導航按鈕
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🎨 專家修復端"):
+            st.query_params.clear()
+            st.query_params["page"] = "repair"
+            st.rerun()
+    with col2:
+        if st.button("🌌 全息投影端"):
+            st.query_params.clear()
+            st.query_params["page"] = "holo"
+            st.rerun()
 
-if app_mode == "🎨 專家修復端":
+# --- 邏輯分流 ---
+
+if current_page == "holo":
+    # ==========================================
+    # 🌌 全息投影端 (URL 鎖定版)
+    # ==========================================
+    st.markdown("""<style>
+        [data-testid="stSidebar"] {display: none;}
+        footer {visibility: hidden;}
+        body {background-color: black !important;}
+        #hologram-display { 
+            background-color: black; 
+            height: 100vh; 
+            width: 100vw; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            position: fixed; 
+            top: 0; 
+            left: 0; 
+        }
+    </style>""", unsafe_allow_html=True)
+    
+    # 自動刷新機制 (使用 JS 刷新內容而非整頁刷新，防止閃爍)
+    st.markdown("""
+    <script>
+        setTimeout(function(){
+            window.parent.document.getElementById('hologram-iframe').src = window.parent.document.getElementById('hologram-iframe').src;
+        }, 3000);
+    </script>
+    """, unsafe_allow_html=True)
+
+    placeholder = st.empty()
+    
+    if os.path.exists(CACHE_FILE):
+        try:
+            img = Image.open(CACHE_FILE)
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode()
+            with placeholder.container():
+                st.markdown(f"""
+                    <div id="hologram-display">
+                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain; border: 2px solid #00ff00;">
+                    </div>
+                """, unsafe_allow_html=True)
+        except:
+            with placeholder.container():
+                st.markdown(f"""
+                    <div id="hologram-display">
+                        <div style="color: #00ff00; font-size: 24px;">❌ 圖片加載錯誤</div>
+                    </div>
+                """, unsafe_allow_html=True)
+    else:
+        with placeholder.container():
+            st.markdown(f"""
+                <div id="hologram-display">
+                    <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
+                        📡 等待修復端同步...
+                    </div>
+                </div>
+            """, unsafe_allow_html=True)
+
+else:
+    # ==========================================
+    # 🎨 專家修復端
+    # ==========================================
     st.title("🏛️ 文物修復主控台")
     
     st.sidebar.divider()
     stroke_w = st.sidebar.slider("筆觸大小", 5, 100, 25)
     
-    # 橡皮擦功能（已修復）
+    # 橡皮擦功能
     tool_mode = st.sidebar.radio("工具", ("✏️ 畫筆模式", "🧽 橡皮擦模式"))
     stroke_color = "#FF0000" if tool_mode == "✏️ 畫筆模式" else "#00000000"
     drawing_mode = "freedraw"
@@ -237,58 +310,3 @@ if app_mode == "🎨 專家修復端":
                         holo_final = create_pseudo_3d_hologram(processed_img, is_transparent)
                         holo_final.save(CACHE_FILE)
                         st.toast("✅ 修復圖已推送到全息螢幕！", icon="🔮")
-
-else:
-    # ==========================================
-    # 🌌 全息投影端（穩定顯示，不會自動切回）
-    # ==========================================
-    st.markdown("""<style>
-        [data-testid="stSidebar"] {display: none;}
-        footer {visibility: hidden;}
-        body {background-color: black !important;}
-        #hologram-display { 
-            background-color: black; 
-            height: 100vh; 
-            width: 100vw; 
-            display: flex; 
-            align-items: center; 
-            justify-content: center; 
-            position: fixed; 
-            top: 0; 
-            left: 0; 
-        }
-    </style>""", unsafe_allow_html=True)
-    
-    # 每3秒自動刷新，不阻塞線程
-    st.markdown('<meta http-equiv="refresh" content="3">', unsafe_allow_html=True)
-    
-    placeholder = st.empty()
-    
-    if os.path.exists(CACHE_FILE):
-        try:
-            img = Image.open(CACHE_FILE)
-            buf = io.BytesIO()
-            img.save(buf, format="PNG")
-            img_b64 = base64.b64encode(buf.getvalue()).decode()
-            with placeholder.container():
-                st.markdown(f"""
-                    <div id="hologram-display">
-                        <img src="data:image/png;base64,{img_b64}" style="max-width: 95%; max-height: 95%; object-fit: contain; border: 2px solid #00ff00;">
-                    </div>
-                """, unsafe_allow_html=True)
-        except:
-            with placeholder.container():
-                st.markdown(f"""
-                    <div id="hologram-display">
-                        <div style="color: #00ff00; font-size: 24px;">❌ 加載全息圖失敗</div>
-                    </div>
-                """, unsafe_allow_html=True)
-    else:
-        with placeholder.container():
-            st.markdown(f"""
-                <div id="hologram-display">
-                    <div style="color: #00ff00; font-size: 24px; text-shadow: 0 0 10px #00ff00;">
-                        📡 等待修復端同步圖像...
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
