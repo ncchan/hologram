@@ -6,13 +6,13 @@ import numpy as np
 from PIL import Image, ImageFilter, ImageOps, ImageEnhance, ImageDraw
 from tencentcloud.common import credential
 from tencentcloud.aiart.v20221229 import aiart_client, models
-from rembg import remove
+from rembg import remove, new_session
 import matplotlib.pyplot as plt
 import cv2
 from streamlit_drawable_canvas import st_canvas
 
 # ==========================================
-# 1. 基礎配置（適配最新版Streamlit）
+# 1. 基礎配置（適配 Python 3.11 + Streamlit 1.32.2）
 # ==========================================
 st.set_page_config(page_title="2026 AI 文物修復系統", layout="wide")
 plt.switch_backend('Agg')  # 避免matplotlib後端衝突
@@ -68,11 +68,23 @@ def stable_artifact_repair(img_pil, mask_pil):
         return buf.getvalue()
 
 def local_remove_bg(img_pil):
+    """恢復完整AI去背功能（基於rembg，Python 3.11兼容）"""
     try:
-        return remove(img_pil)
+        session = new_session("isnet-general-use")  # 使用輕量模型，提升速度
+        return remove(img_pil, session=session)
     except Exception as e:
         st.warning(f"⚠️ 去背失敗，使用原始圖像: {str(e)}")
-        return img_pil.convert("RGBA")
+        # 備用方案：原生簡易去背
+        img_rgba = img_pil.convert("RGBA")
+        datas = img_rgba.getdata()
+        new_data = []
+        for item in datas:
+            if item[0] > 240 and item[1] > 240 and item[2] > 240:
+                new_data.append((255, 255, 255, 0))
+            else:
+                new_data.append(item)
+        img_rgba.putdata(new_data)
+        return img_rgba
 
 # ==========================================
 # 3. 全像投影演算法
@@ -138,19 +150,19 @@ def draw_on_image(img_pil, stroke_w):
         new_size = (int(width*ratio), int(height*ratio))
         img_pil = img_pil.resize(new_size, Image.Resampling.LANCZOS)
     
-    # 將圖片轉為Base64，直接傳入canvas（避開image_to_url）
+    # 將圖片轉為Base64，避免image_to_url兼容問題
     buf = io.BytesIO()
     img_pil.save(buf, format="PNG")
     img_base64 = base64.b64encode(buf.getvalue()).decode("utf-8")
     img_url = f"data:image/png;base64,{img_base64}"
     
-    # 創建可繪製的交互畫布（直接使用Base64 URL）
+    # 創建可繪製的交互畫布
     canvas_result = st_canvas(
         fill_color="rgba(255, 255, 255, 0.0)",  # 填充透明
         stroke_width=stroke_w,
         stroke_color="#FF0000",  # 紅色筆刷（醒目易見）
-        background_image=None,  # 不再傳入PIL對象
-        background_image_url=img_url,  # 改用Base64 URL
+        background_image=None,
+        background_image_url=img_url,  # 使用Base64 URL傳入背景圖
         update_streamlit=True,
         height=img_pil.height,
         width=img_pil.width,
@@ -315,4 +327,3 @@ else:
         """,
         unsafe_allow_html=True
     )
-
